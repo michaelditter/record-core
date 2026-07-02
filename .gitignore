@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Claude Code harness config (local preview helper)
+.claude/

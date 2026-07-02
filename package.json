@@ -1,0 +1,49 @@
+{
+  "name": "@youcannoteat/record-core",
+  "version": "0.1.0",
+  "description": "Reference implementation of the Civic Record Protocol (CRP): build, sign, publish, and verify civic records on Nostr. The shared core of the You Cannot Eat Code tool family.",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check index.mjs"
+  },
+  "keywords": [
+    "nostr",
+    "civic-tech",
+    "civic-record-protocol",
+    "crp",
+    "public-records",
+    "transparency",
+    "decentralization"
+  ],
+  "author": "Michael Ditter",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/michaelditter/record-core.git"
+  },
+  "homepage": "https://github.com/michaelditter/civic-record-protocol",
+  "peerDependencies": {
+    "nostr-tools": ">=2.7.0"
+  },
+  "peerDependenciesMeta": {
+    "nostr-tools": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "nostr-tools": "2.23.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
