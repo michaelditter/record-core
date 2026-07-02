@@ -3,9 +3,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as NostrTools from 'nostr-tools';
+import { randomBytes } from 'node:crypto';
 import {
   CRP, townSlug, civicTags, buildRecord, buildCharter,
-  signRecord, verifyRecord, recordLinks
+  signRecord, verifyRecord, recordLinks, anchorEventId, verifyAnchor
 } from '../index.mjs';
 
 test('townSlug normalizes to a queryable slug', () => {
@@ -95,6 +96,25 @@ test('buildCharter is kind 30023 and requires a stable d', () => {
   assert.ok(c.tags.some((x) => x[0] === 't' && x[1] === 'commons-charter'));
   assert.ok(c.tags.some((x) => x[0] === 'title' && x[1] === 'Goshen Green'));
 });
+
+// Opt-in live OpenTimestamps anchor: hits public calendar servers (network).
+// OTS_LIVE=1 node --test   (skipped by default so the suite stays offline)
+test('live: anchor a random 32-byte hash and confirm the proof commits to it',
+  { skip: !process.env.OTS_LIVE }, async () => {
+    const idHex = randomBytes(32).toString('hex');
+    const { otsBase64, pending } = await anchorEventId(idHex);
+    assert.equal(pending, true, 'a fresh proof is pending Bitcoin confirmation');
+    assert.ok(otsBase64 && otsBase64.length > 0, 'got a serialized .ots proof');
+
+    // The returned proof must deserialize and commit to exactly this id.
+    const v = await verifyAnchor(idHex, otsBase64);
+    assert.ok(v.ok, 'proof commits to the anchored id: ' + v.detail);
+
+    // A proof for a *different* id must be rejected.
+    const otherHex = randomBytes(32).toString('hex');
+    const bad = await verifyAnchor(otherHex, otsBase64);
+    assert.equal(bad.ok, false, 'proof must not verify against a different id');
+  });
 
 // Opt-in live roundtrip: actually publish to a relay and read it back.
 // RECORD_CORE_LIVE=1 node --test   (needs network; skipped in CI by default)

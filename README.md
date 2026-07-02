@@ -62,7 +62,31 @@ const v = verifyRecord(event, NostrTools);
 | `recordLinks(event, NostrTools, relays?)` | `{ nevent, npub, njump }`. |
 | `verifyRecord(event, NostrTools)` | `{ valid, crpCompliant, reasons }`. |
 | `inscribe({ ... , sk, NostrTools })` | build + sign + publish, returns links + report. |
+| `anchorEventId(idHex, { calendars? })` | OpenTimestamps proof-of-existence for a signed event id. Returns `{ otsBase64, pending: true }`. |
+| `verifyAnchor(idHex, otsBase64)` | Check a stored proof. Returns `{ ok, bitcoin: {height,time}\|null, pending, detail }`. |
 | `CRP` | `{ VERSION, KINDS, DEFAULT_RELAYS, TYPES, ... }`. |
+
+## Anchoring in time (OpenTimestamps)
+
+A Nostr signature proves **authorship**: this key wrote this. It does not, by itself, prove **when**. [OpenTimestamps](https://opentimestamps.org) closes that gap by folding a hash into the Bitcoin blockchain through free public calendar servers, giving a **proof of existence**: this exact id existed by this time.
+
+```js
+import { anchorEventId, verifyAnchor } from '@youcannoteat/record-core';
+
+// after you have a signed event:
+const { otsBase64, pending } = await anchorEventId(event.id); // pending === true
+// store otsBase64 out of band (a sidecar .ots file, a URL). Do NOT put it in the event.
+
+// hours later, once Bitcoin has confirmed:
+const v = await verifyAnchor(event.id, otsBase64);
+// { ok: true, bitcoin: { height, time } | null, pending, detail }
+```
+
+Requires the optional `opentimestamps` package (`npm i opentimestamps`); the functions throw a clear install hint if it is missing.
+
+**What it proves:** that this id existed no later than the anchored time. **What it does not prove:** *who* wrote it (that is the signature's job) or *that the claim is true*. And it is not instant: the calendar promises to include the hash in a future Bitcoin block, and that block takes **a few hours** to confirm. Until then the proof is honestly `pending` — `verifyAnchor` reports the commitment as real but the Bitcoin height as `null`, and never invents a confirmation it does not have.
+
+**Out of band, by design.** OTS anchors an *already-signed* id (a sha256). The `.ots` proof is created *after* signing and cannot be embedded in the event: doing so would change the id it commits to. Store and share the proof separately. The CRP reserved `ots` tag is for out-of-band *references* to a proof, never for the proof bytes.
 
 ## The grammar in one glance
 

@@ -193,6 +193,128 @@ export function verifyRecord(event, NostrTools) {
   return { valid: sigOk, crpCompliant: sigOk && tagReasons.length === 0, reasons };
 }
 
+// ---- OpenTimestamps anchoring (proof-of-existence) ----------------
+// Nostr signatures prove *authorship* (this key wrote this). OpenTimestamps
+// proves *existence in time* (this id existed by this moment), by committing a
+// hash into the Bitcoin blockchain via free public calendar servers.
+//
+// CRITICAL: OTS anchors an ALREADY-SIGNED event id (a sha256). The .ots proof
+// is created AFTER signing and CANNOT live inside the signed event — embedding
+// it would change the id it commits to. The proof is stored and shared OUT OF
+// BAND (a sidecar file, a URL). The CRP reserved `ots` tag is for out-of-band
+// *references* to such a proof, never for the proof bytes themselves.
+//
+// Honesty: a fresh proof is PENDING. The calendar has promised to include the
+// hash in a future Bitcoin block; that block takes hours to confirm. Only after
+// upgrading and verifying against Bitcoin can we report a real block height and
+// time. Never claim confirmation you do not have.
+
+const OTS_INSTALL_HINT =
+  'OpenTimestamps anchoring needs the optional `opentimestamps` package. Install it: npm i opentimestamps';
+
+async function loadOTS() {
+  try {
+    const mod = await import('opentimestamps');
+    return mod.default || mod;
+  } catch (e) {
+    throw new Error(OTS_INSTALL_HINT);
+  }
+}
+
+// A 64-char hex string -> 32-byte array. Rejects anything that is not a clean
+// 32-byte sha256 (which every Nostr event id is).
+function hexIdToBytes(idHex) {
+  const s = String(idHex || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(s)) {
+    throw new Error('anchor: expected a 32-byte hex event id (64 hex chars), got: ' + idHex);
+  }
+  const out = new Array(32);
+  for (let i = 0; i < 32; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+// Submit an already-signed event id (a sha256) to public OpenTimestamps calendar
+// servers and return the serialized .ots proof, base64-encoded, to store out of
+// band. The proof is PENDING: the calendars will fold the hash into a Bitcoin
+// block over the next few hours. Verify (and upgrade) later with verifyAnchor.
+export async function anchorEventId(idHex, { calendars } = {}) {
+  const OpenTimestamps = await loadOTS();
+  const { DetachedTimestampFile, Ops } = OpenTimestamps;
+  const digest = hexIdToBytes(idHex);
+
+  // fromHash with OpSHA256 says "this 32-byte value IS the sha256 to timestamp"
+  // (no re-hashing) — the event id itself becomes the timestamp message.
+  const detached = DetachedTimestampFile.fromHash(new Ops.OpSHA256(), digest);
+  const opts = {};
+  if (Array.isArray(calendars) && calendars.length) opts.calendars = calendars;
+  await OpenTimestamps.stamp(detached, opts);
+
+  const bytes = detached.serializeToBytes();
+  const otsBase64 = Buffer.from(bytes).toString('base64');
+  return { otsBase64, pending: true };
+}
+
+// Verify a stored .ots proof against the event id it should commit to.
+// Returns { ok, bitcoin: {height,time}|null, pending, detail }:
+//  - ok:      the proof deserializes and commits to exactly this idHex.
+//  - bitcoin: {height,time} once a Bitcoin attestation confirms; null while pending.
+//  - pending: true when no confirmed Bitcoin attestation exists yet (the honest
+//             common case for hours after anchoring).
+// A committed-but-unconfirmed proof is still `ok` (the calendar holds the promise);
+// it is simply `pending` until Bitcoin confirms. We never fabricate a height.
+export async function verifyAnchor(idHex, otsBase64) {
+  const OpenTimestamps = await loadOTS();
+  const { DetachedTimestampFile, Context, Utils } = OpenTimestamps;
+
+  let wantHex;
+  try {
+    wantHex = Utils.bytesToHex(hexIdToBytes(idHex));
+  } catch (e) {
+    return { ok: false, bitcoin: null, pending: false, detail: (e && e.message) || String(e) };
+  }
+
+  let detached;
+  try {
+    const raw = Buffer.from(String(otsBase64 || ''), 'base64');
+    const ctx = new Context.StreamDeserialization(Array.from(raw));
+    detached = DetachedTimestampFile.deserialize(ctx);
+  } catch (e) {
+    return { ok: false, bitcoin: null, pending: false, detail: 'could not read the .ots proof: ' + ((e && e.message) || e) };
+  }
+
+  // The proof must commit to THIS id, not some other file.
+  const gotHex = Utils.bytesToHex(detached.timestamp.msg);
+  if (gotHex !== wantHex) {
+    return {
+      ok: false, bitcoin: null, pending: false,
+      detail: 'proof does not commit to this id (proof is for ' + gotHex + ')'
+    };
+  }
+
+  // Upgrade (pull any newly-available Bitcoin attestation from the calendars)
+  // and verify. verify() takes (detachedStamped, detachedOriginal, options) and
+  // compares their file digests; for a hash anchor the "original" is the same
+  // detached (its fileDigest IS the id we committed to), so we pass it twice.
+  // Both touch the network; a failure here does not invalidate the commitment,
+  // it only means Bitcoin confirmation is not available yet.
+  let bitcoin = null;
+  let detail = 'This id existed by the time it was anchored. Bitcoin confirmation is still pending (it can take a few hours).';
+  try {
+    try { await OpenTimestamps.upgrade(detached); } catch (e) { /* still pending / offline; keep going */ }
+    const result = await OpenTimestamps.verify(detached, detached, { ignoreBitcoinNode: true });
+    const btc = result && (result.bitcoin || result.litecoin || Object.values(result)[0]);
+    if (btc && (btc.timestamp != null || btc.height != null)) {
+      bitcoin = { height: btc.height != null ? btc.height : null, time: btc.timestamp != null ? btc.timestamp : null };
+      const when = bitcoin.time != null ? new Date(bitcoin.time * 1000).toISOString() : 'a confirmed block';
+      detail = 'Confirmed in the Bitcoin blockchain at block ' + bitcoin.height + ' (' + when + ').';
+    }
+  } catch (e) {
+    detail = 'This id existed by the time it was anchored; Bitcoin confirmation still pending (' + ((e && e.message) || e) + ').';
+  }
+
+  return { ok: true, bitcoin, pending: bitcoin == null, detail };
+}
+
 // Convenience: build + sign + publish in one call, returning links + report.
 export async function inscribe({ content, client, type, town, sk, relays, NostrTools, meshFrom, meshFromName, extraTags }) {
   const tpl = buildRecord({ content, client, type, town, meshFrom, meshFromName, extraTags });

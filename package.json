@@ -40,8 +40,12 @@
       "optional": true
     }
   },
+  "optionalDependencies": {
+    "opentimestamps": "^0.4.9"
+  },
   "devDependencies": {
-    "nostr-tools": "2.23.5"
+    "nostr-tools": "2.23.5",
+    "opentimestamps": "^0.4.9"
   },
   "engines": {
     "node": ">=18"
