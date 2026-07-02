@@ -125,21 +125,19 @@ export function signRecord(template, sk, NostrTools) {
 
 // Publish a signed event to several relays for durability. Resolves to a
 // per-relay accept/fail report — never rejects, so a dead relay can't sink a
-// publish that other relays accepted.
-export async function publishRecord(event, relays, NostrTools) {
+// publish that other relays accepted. Each relay is bounded by `timeoutMs`
+// (default 8s) so one hung relay can't stall the whole call.
+export async function publishRecord(event, relays, NostrTools, { timeoutMs = 8000 } = {}) {
   if (!NostrTools || typeof NostrTools.SimplePool !== 'function') {
     throw new Error('publishRecord: pass a nostr-tools instance as the third argument');
   }
   const list = (relays && relays.length ? relays : CRP.DEFAULT_RELAYS).slice();
   const pool = new NostrTools.SimplePool();
-  const settled = await Promise.allSettled(pool.publish(list, event));
-  const per = list.map((relay, i) => ({
-    relay,
-    ok: settled[i].status === 'fulfilled',
-    error: settled[i].status === 'rejected'
-      ? String((settled[i].reason && settled[i].reason.message) || settled[i].reason)
-      : null
-  }));
+  const bounded = (p, relay) => Promise.race([
+    Promise.resolve(p).then(() => ({ relay, ok: true, error: null })),
+    new Promise((res) => setTimeout(() => res({ relay, ok: false, error: 'timeout' }), timeoutMs))
+  ]).catch((e) => ({ relay, ok: false, error: String((e && e.message) || e) }));
+  const per = await Promise.all(pool.publish(list, event).map((p, i) => bounded(p, list[i])));
   try { pool.close(list); } catch (e) { /* pool already closing */ }
   return { accepted: per.filter((p) => p.ok).length, total: list.length, per };
 }
